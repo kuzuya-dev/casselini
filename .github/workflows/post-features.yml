@@ -1,0 +1,43 @@
+name: Post CASSELINI features to X
+
+on:
+  schedule:
+    - cron: "0,30 * * * *" # 30分おき(UTC基準)
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+concurrency:
+  group: post-features
+  cancel-in-progress: false
+
+jobs:
+  post:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install -r requirements.txt
+
+      - name: Run bot
+        env:
+          X_API_KEY: ${{ secrets.X_API_KEY }}
+          X_API_SECRET: ${{ secrets.X_API_SECRET }}
+          X_ACCESS_TOKEN: ${{ secrets.X_ACCESS_TOKEN }}
+          X_ACCESS_SECRET: ${{ secrets.X_ACCESS_SECRET }}
+        run: python scripts/post_features.py
+
+      - name: Commit updated known.json
+        run: |
+          if [ -n "$(git status --porcelain data/known.json)" ]; then
+            git config user.name "casselini-x-bot"
+            git config user.email "actions@github.com"
+            git add data/known.json
+            git commit -m "Update known feature URLs"
+            git push
+          fi
