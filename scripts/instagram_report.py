@@ -28,6 +28,7 @@ import requests
 BASE_URL = os.environ.get("METRICOOL_BASE_URL", "https://app.metricool.com/api")
 REPORT_DIR = os.path.join(os.path.dirname(__file__), "..", "data", "reports", "instagram")
 ASTREAM_DIR = os.path.join(os.path.dirname(__file__), "..", "data", "astream")
+KNOWN_URLS_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "known.json")
 JST = timezone(timedelta(hours=9))
 
 # 課題判定のしきい値。アパレルEC系Instagramアカウントの一般的な水準をもとにした初期値なので、
@@ -181,7 +182,7 @@ def summarize_posts(items):
     }
 
 
-def analyze(snapshot, days):
+def analyze(snapshot, days, cadence=None):
     """KPIを計算し、課題点(issues)を抽出する。"""
     weeks = days / 7.0
     posts = summarize_posts(snapshot["posts"])
@@ -308,9 +309,70 @@ def analyze(snapshot, days):
         "action": "プロフィールとストーリーズのリンクにUTMパラメータ(utm_source=instagram)を付与し、次回以降のレポートで送客数を追跡する。",
     })
 
+    # サイト側は特集ページを継続供給しているのに、Instagramの投稿頻度が低い場合、
+    # 「作ったコンテンツを十分に告知できていない」という取りこぼしを指摘する。
+    if cadence and cadence["features_per_month"] >= 1.0 and kpi["posts_per_week"] < t["posts_per_week_low"]:
+        issues.append({
+            "severity": "中",
+            "title": "サイトの特集コンテンツをInstagramで活かしきれていない",
+            "evidence": f"公式サイトは特集ページを月{cadence['features_per_month']:.1f}本のペースで公開している(直近12ヶ月)が、Instagramの投稿は週{kpi['posts_per_week']:.1f}本にとどまる。制作済みの特集が告知に使われていない可能性。",
+            "action": "特集1本につきフィード+リール+ストーリーズ複数枚に展開する運用を定型化する。既存のX BotのRSS連携と同じ仕組みでInstagram投稿ネタを供給できる。",
+        })
+
     order = {"高": 0, "中": 1, "低": 2}
     issues.sort(key=lambda i: order[i["severity"]])
     return kpi, issues
+
+
+def analyze_feature_cadence(days):
+    """data/known.json(既存X Botが管理する特集ページURL一覧)から、サイト側の
+    コンテンツ供給ペースを算出する。認証情報なしで動くため、Metricool未接続でも
+    レポートに含められる。URL末尾の日付(YYYYMMDD / YYMMDD)を公開日とみなす。
+    """
+    if not os.path.exists(KNOWN_URLS_PATH):
+        return None
+    try:
+        with open(KNOWN_URLS_PATH, "r", encoding="utf-8") as f:
+            urls = json.load(f)
+    except Exception:
+        return None
+
+    dated = []
+    for url in urls:
+        tail = url.rstrip("/").rsplit("/feature/", 1)[-1]
+        dt = None
+        if len(tail) == 8 and tail.isdigit():
+            try:
+                dt = datetime.strptime(tail, "%Y%m%d")
+            except ValueError:
+                dt = None
+        elif len(tail) == 6 and tail.isdigit():
+            try:
+                dt = datetime.strptime(tail, "%y%m%d")
+            except ValueError:
+                dt = None
+        if dt:
+            dated.append(dt)
+
+    dated.sort()
+    now = datetime.now()
+    months = max(days / 30.0, 0.1)
+    in_window = [d for d in dated if d >= now - timedelta(days=days)]
+
+    # 直近12ヶ月の月平均(母数が安定するので指標として使う)
+    year_ago = now - timedelta(days=365)
+    last_year = [d for d in dated if d >= year_ago]
+    per_month = len(last_year) / 12.0 if last_year else 0
+
+    return {
+        "total_features": len(urls),
+        "dated_features": len(dated),
+        "campaign_slugs": len(urls) - len(dated),
+        "features_in_window": len(in_window),
+        "features_per_month": per_month,
+        "features_per_month_in_window": len(in_window) / months,
+        "latest": dated[-1].strftime("%Y-%m-%d") if dated else None,
+    }
 
 
 def load_astream_csvs():
@@ -338,7 +400,7 @@ def fmt_pct(value, digits=2):
     return f"{value * 100:.{digits}f}%" if value is not None else "—"
 
 
-def render_markdown(kpi, issues, astream, snapshot, start, end, demo=False):
+def render_markdown(kpi, issues, astream, snapshot, start, end, demo=False, cadence=None):
     lines = []
     lines.append(f"# CASSELINI Instagram 分析レポート({end.strftime('%Y-%m-%d')})")
     lines.append("")
@@ -384,6 +446,21 @@ def render_markdown(kpi, issues, astream, snapshot, start, end, demo=False):
         else:
             lines.append(f"| {label} | — | — | — |")
     lines.append("")
+
+    if cadence:
+        lines.append("## サイト側コンテンツ供給(Instagram発信との比較)")
+        lines.append("")
+        lines.append("公式サイトの特集ページ公開ペースを、Instagram投稿の元ネタ供給量の目安として示す(`data/known.json` より、認証情報なしで集計)。")
+        lines.append("")
+        lines.append("| 指標 | 値 |")
+        lines.append("| --- | --- |")
+        lines.append(f"| 特集ページ総数 | {cadence['total_features']}件(うち日付判定{cadence['dated_features']}件、キャンペーン名{cadence['campaign_slugs']}件) |")
+        lines.append(f"| 特集の公開ペース | 月{cadence['features_per_month']:.1f}本(直近12ヶ月) |")
+        lines.append(f"| Instagram投稿ペース | 週{kpi['posts_per_week']:.1f}本(≒月{kpi['posts_per_week'] * 4.3:.1f}本) |")
+        lines.append(f"| 最新の特集公開日 | {cadence['latest'] or '—'} |")
+        lines.append("")
+        lines.append("> 特集1本は、フィード告知・リール・ストーリーズ複数枚に展開できる素材。サイトの供給ペースに対してInstagramの発信が少ない場合、制作済みコンテンツの告知を取りこぼしている。")
+        lines.append("")
 
     lines.append("## Astreamデータ(フォロワー分析)")
     lines.append("")
@@ -515,9 +592,10 @@ def main():
                 + " / ".join(snapshot["warnings"])
             )
 
-    kpi, issues = analyze(snapshot, args.days)
+    cadence = analyze_feature_cadence(args.days)
+    kpi, issues = analyze(snapshot, args.days, cadence=cadence)
     astream = load_astream_csvs()
-    markdown = render_markdown(kpi, issues, astream, snapshot, start, end, demo=args.demo)
+    markdown = render_markdown(kpi, issues, astream, snapshot, start, end, demo=args.demo, cadence=cadence)
     write_report(markdown, snapshot, end, demo=args.demo)
 
 
