@@ -2,6 +2,8 @@
 
 CASSELINI公式オンラインショップの特集ページ(`https://www.casselini-online.com/feature/`)のRSSフィードを監視し、新着があれば自動でXに投稿するBotです。GitHub Actionsで30分おきに実行されます。
 
+このリポジトリには、公式Instagramの課題点を毎週自動抽出する分析レポート機能も含まれています(下記「Instagram分析レポート」参照)。
+
 ## 仕組み
 
 1. `https://www.casselini-online.com/feature/feed/` を取得
@@ -55,3 +57,11 @@ python scripts/post_features.py
 
 - 実行頻度: `.github/workflows/post-features.yml` の `cron` を変更
 - ツイート文言: `scripts/post_features.py` の `build_tweet_text` を編集
+
+## Instagram分析レポート
+
+Metricool API(+Astream CSVエクスポート)からInstagramのデータを取得し、KPIと課題点をまとめたMarkdownレポートを毎週月曜9:00(JST)に `data/reports/instagram/` へ自動コミットします。
+
+- セットアップ手順: [docs/setup-instagram-analytics.md](docs/setup-instagram-analytics.md)
+- レポートのサンプル: [data/reports/instagram/sample-report.md](data/reports/instagram/sample-report.md)
+- 必要なSecrets: `METRICOOL_API_TOKEN` / `METRICOOL_USER_ID` / `METRICOOL_BLOG_ID`(Advancedプラン以上が必要)
