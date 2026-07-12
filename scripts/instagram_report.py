@@ -46,21 +46,33 @@ THRESHOLDS = {
     "link_click_rate_low": 0.05,     # サイトクリック / プロフィールアクセス
 }
 
+# 投稿系(v2)エンドポイントに渡すタイムゾーンと、フォロワー推移(timeline)の
+# メトリクス名。Metricool側の呼称に依存するため環境変数で上書きできる。
+TIMEZONE = os.environ.get("METRICOOL_TIMEZONE") or "Asia/Tokyo"
+FOLLOWERS_METRIC = os.environ.get("METRICOOL_FOLLOWERS_METRIC") or "Followers"
+
 
 class MetricoolClient:
     """Metricool REST APIの薄いラッパー。
 
-    認証はX-Mc-Authヘッダー。エンドポイントはMetricool公式APIドキュメント
-    (https://app.metricool.com/resources/apidocs/index.html)に準拠。
+    エンドポイントはオープンソースのMetricool CLI実装(Purple-Horizons/metricool-cli)
+    で使われている実際のパスに合わせている。認証はX-Mc-Authヘッダー。
+    旧世代の /stats/* 系はクエリの userToken も要求するため両方付与する。
+    - 投稿/リール: /v2/analytics/{posts,reels}/instagram  (from/to はISO8601)
+    - ストーリーズ: /stats/instagram/stories             (start/end はYYYYMMDD)
+    - 時系列:      /stats/timeline/{metric}              (start/end はYYYYMMDD)
+    - ブランド一覧: /admin/simpleProfiles
     """
 
     def __init__(self, token, user_id):
+        self.token = token
         self.user_id = user_id
         self.session = requests.Session()
         self.session.headers["X-Mc-Auth"] = token
 
     def _get(self, path, **params):
         params.setdefault("userId", self.user_id)
+        params.setdefault("userToken", self.token)
         resp = self.session.get(f"{BASE_URL}{path}", params=params, timeout=60)
         if resp.status_code == 401:
             raise RuntimeError(
@@ -75,26 +87,38 @@ class MetricoolClient:
 
     def timeline(self, blog_id, metric, start, end):
         data = self._get(
-            "/v2/analytics/timelines",
+            f"/stats/timeline/{metric}",
             blogId=blog_id,
-            metric=metric,
-            network="instagram",
-            **{"from": _fmt(start), "to": _fmt(end)},
+            start=_fmt_day(start),
+            end=_fmt_day(end),
         )
         return _parse_timeline(data)
 
     def posts(self, blog_id, kind, start, end):
         """kind: 'posts' | 'reels' | 'stories'"""
-        data = self._get(
-            f"/v2/analytics/{kind}/instagram",
-            blogId=blog_id,
-            **{"from": _fmt(start), "to": _fmt(end)},
-        )
+        if kind == "stories":
+            data = self._get(
+                "/stats/instagram/stories",
+                blogId=blog_id,
+                start=_fmt_day(start),
+                end=_fmt_day(end),
+            )
+        else:
+            data = self._get(
+                f"/v2/analytics/{kind}/instagram",
+                blogId=blog_id,
+                timezone=TIMEZONE,
+                **{"from": _fmt(start), "to": _fmt(end)},
+            )
         return _extract_list(data)
 
 
 def _fmt(dt):
     return dt.strftime("%Y-%m-%dT%H:%M:%S")
+
+
+def _fmt_day(dt):
+    return dt.strftime("%Y%m%d")
 
 
 def _extract_list(data):
@@ -153,10 +177,14 @@ def collect_data(client, blog_id, start, end):
             snapshot["warnings"].append(f"{kind}の取得に失敗: {e}")
 
     try:
-        snapshot["followers_timeline"] = client.timeline(blog_id, "followers", start, end)
+        snapshot["followers_timeline"] = client.timeline(blog_id, FOLLOWERS_METRIC, start, end)
     except Exception as e:
         snapshot["followers_timeline"] = []
-        snapshot["warnings"].append(f"フォロワー推移の取得に失敗: {e}")
+        snapshot["warnings"].append(
+            f"フォロワー推移の取得に失敗: {e}"
+            f"(メトリクス名 '{FOLLOWERS_METRIC}' が違う可能性。"
+            "環境変数 METRICOOL_FOLLOWERS_METRIC で調整可能)"
+        )
 
     return snapshot
 

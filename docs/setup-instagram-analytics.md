@@ -66,6 +66,34 @@ Astream(<https://astream.jp/>)は外部連携用のAPIを提供していない�
 - **投稿タイプ別パフォーマンス**: フィード/リール/ストーリーズの比較
 - **Astreamチェックリスト**: フォロワー属性とECターゲットの一致度確認
 
+## 使用しているAPIエンドポイント
+
+実装は、オープンソースの [Metricool CLI](https://github.com/Purple-Horizons/metricool-cli) で実際に使われているパスに合わせています。
+
+| データ | エンドポイント | 日付形式 |
+| --- | --- | --- |
+| ブランド一覧 | `GET /admin/simpleProfiles` | — |
+| フィード投稿 | `GET /v2/analytics/posts/instagram` | ISO8601(`from`/`to`) |
+| リール | `GET /v2/analytics/reels/instagram` | ISO8601(`from`/`to`) |
+| ストーリーズ | `GET /stats/instagram/stories` | YYYYMMDD(`start`/`end`) |
+| フォロワー推移 | `GET /stats/timeline/{metric}` | YYYYMMDD(`start`/`end`) |
+
+認証は全リクエストで `X-Mc-Auth` ヘッダー + `userToken`/`userId` クエリを付与。すべての分析系は `blogId` が必須です。
+
+## トラブルシューティング
+
+- **フォロワー数が「—」になる**: `/stats/timeline/{metric}` のメトリクス名がMetricool側の呼称と異なる可能性があります。Secretに `METRICOOL_FOLLOWERS_METRIC` を追加して調整してください(デフォルト `Followers`)。ワークフローのログに、試行したメトリクス名を含む警告が出ます。
+- **投稿の集計時刻がずれる**: `METRICOOL_TIMEZONE` をSecretに追加(デフォルト `Asia/Tokyo`)。
+- **401エラー**: トークンが誤っているか、プランがAdvanced未満です。Settings → API で再発行してください。
+- **一部データだけ取れない**: 取得に失敗したAPIはレポート末尾の「データ取得の警告」に記録され、取れたデータだけでレポートは生成されます。
+
+### 任意で追加できるSecret
+
+| Secret名 | 用途 | デフォルト |
+| --- | --- | --- |
+| `METRICOOL_FOLLOWERS_METRIC` | フォロワー推移のメトリクス名 | `Followers` |
+| `METRICOOL_TIMEZONE` | 投稿集計のタイムゾーン | `Asia/Tokyo` |
+
 ## 課題判定のしきい値を調整したい場合
 
 `scripts/instagram_report.py` の `THRESHOLDS` を編集してください。初期値はアパレルEC系アカウントの一般的な水準です。
